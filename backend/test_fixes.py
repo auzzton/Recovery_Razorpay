@@ -85,7 +85,8 @@ class TestRecoveryOSFixes(unittest.TestCase):
             # Check auto-increment key is retrieved correctly
             log_id = cursor.lastrowid
             self.assertIsNotNone(log_id)
-            print(f"Successfully inserted audit log. SQLite autoincrement ID retrieved: {log_id}")
+            print(f"Successfully inserted audit log. Postgres SERIAL ID retrieved: {log_id}")
+
             
             cursor.execute("SELECT * FROM recovery_audit_logs WHERE id = ?", (log_id,))
             row = cursor.fetchone()
