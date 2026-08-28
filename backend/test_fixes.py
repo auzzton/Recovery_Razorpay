@@ -16,6 +16,15 @@ class TestRecoveryOSFixes(unittest.TestCase):
     def setUp(self):
         # Ensure database is clean or re-initialized before tests
         init_db()
+        # Clean all tables to prevent test state leakages across test runs
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM recovery_audit_logs")
+        cursor.execute("DELETE FROM recovery_workflows")
+        cursor.execute("DELETE FROM at_risk_events")
+        conn.commit()
+        conn.close()
+
 
     def test_date_parser_nlp(self):
         print("\n--- Running Date Parser NLP Tests ---")
@@ -124,9 +133,11 @@ class TestRecoveryOSFixes(unittest.TestCase):
         row = cursor.fetchone()
         conn.close()
 
-        self.assertEqual(row["current_state"], "PROMISE_BREACHED")
+        # Now that auto re-triage triggers post-breach, the FSM transitions to RETRY_SCHEDULED
+        self.assertEqual(row["current_state"], "RETRY_SCHEDULED")
         self.assertEqual(row["promise_breached"], 1)
-        print("Successfully verified background breach job transitions overdue promises automatically!")
+        print("Successfully verified background breach job transitions overdue promises automatically and triggers auto re-triage!")
+
 
     def test_gemini_decision_engine_fallback_and_config(self):
         print("\n--- Running Gemini Decision Engine Fallback & Config Tests ---")
@@ -245,5 +256,110 @@ class TestRecoveryOSFixes(unittest.TestCase):
         print(f"DB verified: event_id={event_row['id']} state={wf_row['current_state']} audit_logs={audit_count}")
         print("Full webhook pipeline test PASSED — event persisted, triage ran, audit logged, outreach dispatched!")
 
+    def test_twilio_webhook_ingestion(self):
+        print("\n--- Running Twilio Inbound Webhook Tests ---")
+        from fastapi.testclient import TestClient
+        from backend.app.main import app
+
+        client = TestClient(app)
+
+        # 1. Create a dummy active event and workflow to target
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO at_risk_events
+            (id, merchant_id, customer_id, customer_name, customer_phone, amount_in_cents, event_type, failure_code)
+            VALUES ('evt_twilio_001', 'MER_001', 'CUST_TWILIO', 'Twilio Phone User', '+919999000002', 20000, 'PAYMENT_FAILED', 'CARD_EXPIRED')
+            """
+        )
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO recovery_workflows
+            (id, event_id, current_state, is_terminal)
+            VALUES ('wf_twilio_001', 'evt_twilio_001', 'AWAITING_REPLY', 0)
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        # 2. Simulate Twilio payload: "Pay on Friday"
+        resp1 = client.post("/api/webhook/twilio", data={
+            "From": "whatsapp:+919999000002",
+            "Body": "Pay on Friday"
+        })
+        self.assertEqual(resp1.status_code, 200)
+        self.assertEqual(resp1.json()["status"], "PROMISE_RECORDED")
+        self.assertEqual(resp1.json()["workflow"]["current_state"], "PROMISE_TO_PAY")
+        print("Twilio webhook reply 'Pay on Friday' processed successfully -> state updated to PROMISE_TO_PAY.")
+
+        # 3. Reset workflow for next check
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE recovery_workflows SET current_state = 'AWAITING_REPLY', is_terminal = 0 WHERE id = 'wf_twilio_001'")
+        conn.commit()
+        conn.close()
+
+        # 4. Simulate Twilio payload: "band karo" (Opt-Out keyword)
+        resp2 = client.post("/api/webhook/twilio", data={
+            "From": "whatsapp:+919999000002",
+            "Body": "band karo"
+        })
+        self.assertEqual(resp2.status_code, 200)
+        self.assertEqual(resp2.json()["status"], "GUARD_BLOCKED")
+        self.assertEqual(resp2.json()["workflow"]["current_state"], "DNC_LOCKED")
+        print("Twilio webhook reply 'band karo' processed successfully -> blocked and state set to DNC_LOCKED.")
+
+
+    def test_breach_auto_retriage(self):
+        print("\n--- Running Breach Auto-ReTriage Tests ---")
+        from fastapi.testclient import TestClient
+        from backend.app.main import app
+
+        client = TestClient(app)
+
+        # 1. Create a promise to pay workflow to breach
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO at_risk_events
+            (id, merchant_id, customer_id, customer_name, customer_email, customer_phone, amount_in_cents, event_type, failure_code)
+            VALUES ('evt_breach_001', 'MER_001', 'CUST_BREACH', 'Breach User', 'breach@example.com', '+919999000003', 100000, 'PAYMENT_FAILED', 'UPI_DAILY_LIMIT_EXCEEDED')
+            """
+        )
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO recovery_workflows
+            (id, event_id, current_state, promise_breached, is_terminal)
+            VALUES ('wf_breach_001', 'evt_breach_001', 'PROMISE_TO_PAY', 0, 0)
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        # 2. Trigger the simulated breach
+        resp = client.post("/api/simulator/trigger-breach?workflow_id=wf_breach_001")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "BREACH_TRIGGERED")
+        
+        # Verify FSM moved past PROMISE_BREACHED due to re-triage (since UPI_DAILY_LIMIT recommends SILENT_RETRY -> RETRY_SCHEDULED)
+        final_state = resp.json()["workflow"]["current_state"]
+        self.assertEqual(final_state, "RETRY_SCHEDULED")
+        
+        # Confirm audit logs have the breach AND the auto re-triage records
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM recovery_audit_logs WHERE workflow_id = 'wf_breach_001' ORDER BY id ASC")
+        logs = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+
+        self.assertGreaterEqual(len(logs), 2)
+        self.assertEqual(logs[0]["to_state"], "PROMISE_BREACHED")
+        self.assertEqual(logs[1]["to_state"], "RETRY_SCHEDULED")
+        self.assertEqual(logs[1]["trigger_type"], "AUTO_RE_TRIAGE")
+        print(f"Breach re-triage verified: FSM moved from PROMISE_TO_PAY -> PROMISE_BREACHED -> {final_state} automatically!")
+
 if __name__ == "__main__":
     unittest.main()
+
