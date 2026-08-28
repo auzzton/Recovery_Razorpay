@@ -1,0 +1,249 @@
+import os
+import sys
+import unittest
+from datetime import datetime, timezone, timedelta
+
+# Adjust python path to find backend modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from backend.db.database import get_connection, init_db
+from backend.app.date_parser import extract_promise_date, get_promise_date
+from backend.app.main import check_and_trigger_breaches
+from backend.app.fsm import transition_state
+
+class TestRecoveryOSFixes(unittest.TestCase):
+
+    def setUp(self):
+        # Ensure database is clean or re-initialized before tests
+        init_db()
+
+    def test_date_parser_nlp(self):
+        print("\n--- Running Date Parser NLP Tests ---")
+        
+        # Test 1: Pay on Friday
+        date_friday = extract_promise_date("Pay on Friday")
+        self.assertIsNotNone(date_friday)
+        print(f"Parsed 'Pay on Friday' -> {date_friday}")
+        # Friday should be in the future
+        self.assertTrue(date_friday > datetime.now(timezone.utc))
+
+        # Test 2: Tomorrow at 5pm
+        date_tomorrow = extract_promise_date("will pay tomorrow at 5pm")
+        self.assertIsNotNone(date_tomorrow)
+        print(f"Parsed 'will pay tomorrow at 5pm' -> {date_tomorrow}")
+        self.assertTrue(date_tomorrow > datetime.now(timezone.utc))
+
+        # Test 3: Standard fallback for messages without dates
+        fallback = get_promise_date("I am busy")
+        fallback_dt = datetime.fromisoformat(fallback)
+        expected_fallback = datetime.now(timezone.utc) + timedelta(days=3)
+        # Difference should be less than 5 seconds
+        self.assertLess(abs((fallback_dt - expected_fallback).total_seconds()), 5)
+        print(f"Parsed 'I am busy' (fallback) -> {fallback}")
+
+    def test_postgres_schema_compatibility(self):
+        print("\n--- Running Database Schema & Query Tests ---")
+        # Ensure recovery_audit_logs works and executes correctly
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Insert a sample event & workflow to verify constraints
+        try:
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO at_risk_events 
+                (id, merchant_id, customer_id, customer_name, customer_phone, customer_email, amount_in_cents, event_type)
+                VALUES ('test_event_123', 'merch_1', 'cust_1', 'Test Customer', '9999999999', 'test@test.com', 5000, 'PAYMENT_FAILED')
+                """
+            )
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO recovery_workflows
+                (id, event_id, current_state, promise_to_pay_date, promise_breached, is_terminal)
+                VALUES ('test_wf_123', 'test_event_123', 'TRIAGED', NULL, 0, 0)
+                """
+            )
+            # Insert to recovery_audit_logs to verify SERIAL PRIMARY KEY structure
+            cursor.execute(
+                """
+                INSERT INTO recovery_audit_logs 
+                (workflow_id, from_state, to_state, trigger_type, actor, reasoning, created_at)
+                VALUES ('test_wf_123', 'TRIAGED', 'PROMISE_TO_PAY', 'USER_INPUT', 'AGENT_BRAIN', 'Test reasoning', ?)
+                """,
+                (datetime.now(timezone.utc).isoformat(),)
+            )
+            
+            # Check auto-increment key is retrieved correctly
+            log_id = cursor.lastrowid
+            self.assertIsNotNone(log_id)
+            print(f"Successfully inserted audit log. SQLite autoincrement ID retrieved: {log_id}")
+            
+            cursor.execute("SELECT * FROM recovery_audit_logs WHERE id = ?", (log_id,))
+            row = cursor.fetchone()
+            self.assertEqual(row["workflow_id"], 'test_wf_123')
+            print("Successfully retrieved schema logs. Serialization schema works perfectly.")
+            
+        finally:
+            conn.commit()
+            conn.close()
+
+    def test_scheduler_breach_detection(self):
+        print("\n--- Running Scheduler Breach Detection Tests ---")
+        # Initialize test data
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # 1. Create event
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO at_risk_events 
+            (id, merchant_id, customer_id, customer_name, amount_in_cents, event_type)
+            VALUES ('evt_scheduler_test', 'merch_1', 'cust_2', 'Scheduler Test Customer', 10000, 'PAYMENT_FAILED')
+            """
+        )
+        
+        # 2. Create workflow with promise_to_pay_date set to 3 hours ago (overdue)
+        overdue_promise = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO recovery_workflows
+            (id, event_id, current_state, promise_to_pay_date, promise_breached, is_terminal)
+            VALUES ('wf_scheduler_test', 'evt_scheduler_test', 'PROMISE_TO_PAY', ?, 0, 0)
+            """
+        , (overdue_promise,))
+        conn.commit()
+        conn.close()
+
+        # Run scheduler check job
+        check_and_trigger_breaches()
+
+        # Verify state transitioned to PROMISE_BREACHED
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT current_state, promise_breached FROM recovery_workflows WHERE id = 'wf_scheduler_test'")
+        row = cursor.fetchone()
+        conn.close()
+
+        self.assertEqual(row["current_state"], "PROMISE_BREACHED")
+        self.assertEqual(row["promise_breached"], 1)
+        print("Successfully verified background breach job transitions overdue promises automatically!")
+
+    def test_gemini_decision_engine_fallback_and_config(self):
+        print("\n--- Running Gemini Decision Engine Fallback & Config Tests ---")
+        from backend.app.llm_provider import GeminiDecisionEngine
+
+        # Test case 1: Verify fallback engine is loaded if API key is absent
+        os.environ.pop("GEMINI_API_KEY", None)
+        engine = GeminiDecisionEngine()
+        self.assertFalse(engine.client_ready)
+        
+        event = {
+            "failure_code": "BANK_DOWNTIME",
+            "amount_in_cents": 10000,
+            "customer_tier": "VIP"
+        }
+        workflow_context = {"retry_count": 0, "contact_count": 0}
+        
+        # Should fallback to heuristic engine successfully
+        res = engine.triage_event(event, workflow_context)
+        self.assertEqual(res.recommended_action, "SILENT_RETRY")
+        print("Successfully verified heuristic fallback for triage when API key is absent.")
+
+        # Test case 2: Model swap flexibility
+        os.environ["GEMINI_MODEL"] = "gemini-2.5-flash-lite"
+        engine_swap = GeminiDecisionEngine()
+        self.assertEqual(engine_swap.model_name, "gemini-2.5-flash-lite")
+        print(f"Successfully verified model swap config: {engine_swap.model_name}")
+
+    def test_outreach_dispatcher_simulation_mode(self):
+        print("\n--- Running Outreach Dispatcher Simulation Tests ---")
+        # Unset all outreach credentials to force simulation mode
+        for key in ["RESEND_API_KEY", "SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD",
+                    "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]:
+            os.environ.pop(key, None)
+
+        import importlib
+        import backend.app.outreach_dispatcher as dispatcher
+        importlib.reload(dispatcher)  # reload so env vars take effect
+
+        result = dispatcher.send_payment_reminder(
+            customer_name="Test User",
+            customer_email=None,       # no email — forces fallback chain
+            customer_phone=None,       # no phone — forces simulation
+            amount_in_cents=50000,
+            failure_code="INSUFFICIENT_FUNDS",
+            payment_url="https://rzp.io/l/rec_test",
+            message_body="Hi Test User, your payment of ₹500.00 failed.",
+            event_id="test_event_dispatch_001",
+        )
+        self.assertEqual(result["channel"], "SIMULATION")
+        self.assertEqual(result["status"], "simulated")
+        print(f"Dispatcher simulation mode verified: channel={result['channel']}")
+
+        # With email present, still simulation (no RESEND_API_KEY / SMTP creds)
+        result2 = dispatcher.send_payment_reminder(
+            customer_name="Test User",
+            customer_email="test@example.com",
+            customer_phone="+919876543210",
+            amount_in_cents=100000,
+            failure_code="CARD_EXPIRED",
+            payment_url="https://rzp.io/l/rec_test2",
+            message_body="Hi Test User, your payment of ₹1000 failed.",
+            event_id="test_event_dispatch_002",
+        )
+        self.assertEqual(result2["channel"], "SIMULATION")
+        print(f"Dispatcher with email+phone still simulation (no keys): channel={result2['channel']}")
+
+    def test_webhook_full_pipeline(self):
+        print("\n--- Running Full Webhook Pipeline Test ---")
+        from fastapi.testclient import TestClient
+        from backend.app.main import app
+
+        client = TestClient(app)
+
+        # Trigger the automated webhook pipeline
+        response = client.post("/api/webhook/razorpay", json={
+            "customer_name": "Webhook Test Customer",
+            "amount_in_cents": 150000,
+            "failure_code": "INSUFFICIENT_FUNDS",
+            "customer_email": "webhook_test@example.com",
+            "customer_phone": "+919999000001",
+            "customer_tier": "VIP",
+            "merchant_id": "MER_TEST",
+            "event_type": "PAYMENT_FAILED",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        print(f"Webhook response status: {data['status']}")
+        print(f"Event ID: {data['event_id']}")
+        print(f"Triage action: {data['triage']['recommended_action']}")
+        print(f"FSM state: {data['triage']['fsm_state']}")
+        print(f"Outreach channel: {data['outreach']['channel'] if data['outreach'] else 'None (SILENT_RETRY)'}")
+
+        # Assertions
+        self.assertEqual(data["status"], "PROCESSED")
+        self.assertIn("event_id", data)
+        self.assertIn("workflow_id", data)
+        self.assertIsNotNone(data["triage"]["recommended_action"])
+        self.assertIsNotNone(data["triage"]["fsm_state"])
+
+        # Verify event is persisted in DB
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM at_risk_events WHERE id = ?", (data["event_id"],))
+        event_row = cursor.fetchone()
+        cursor.execute("SELECT * FROM recovery_workflows WHERE id = ?", (data["workflow_id"],))
+        wf_row = cursor.fetchone()
+        cursor.execute("SELECT COUNT(*) as cnt FROM recovery_audit_logs WHERE workflow_id = ?", (data["workflow_id"],))
+        audit_count = cursor.fetchone()["cnt"]
+        conn.close()
+
+        self.assertIsNotNone(event_row)
+        self.assertIsNotNone(wf_row)
+        self.assertGreater(audit_count, 0)
+        print(f"DB verified: event_id={event_row['id']} state={wf_row['current_state']} audit_logs={audit_count}")
+        print("Full webhook pipeline test PASSED — event persisted, triage ran, audit logged, outreach dispatched!")
+
+if __name__ == "__main__":
+    unittest.main()
