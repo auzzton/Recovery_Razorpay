@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 # Adjust python path to find backend modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.db.database import get_connection, init_db
+from backend.db.database import get_connection, init_db, dict_from_row, DB_BACKEND, SCHEMA_PATH
 from backend.app.date_parser import extract_promise_date, get_promise_date
 from backend.app.main import check_and_trigger_breaches
 from backend.app.fsm import transition_state
@@ -52,49 +52,113 @@ class TestRecoveryOSFixes(unittest.TestCase):
 
     def test_postgres_schema_compatibility(self):
         print("\n--- Running Database Schema & Query Tests ---")
-        # Ensure recovery_audit_logs works and executes correctly
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Insert a sample event & workflow to verify constraints
-        try:
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO at_risk_events 
-                (id, merchant_id, customer_id, customer_name, customer_phone, customer_email, amount_in_cents, event_type)
-                VALUES ('test_event_123', 'merch_1', 'cust_1', 'Test Customer', '9999999999', 'test@test.com', 5000, 'PAYMENT_FAILED')
-                """
-            )
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO recovery_workflows
-                (id, event_id, current_state, promise_to_pay_date, promise_breached, is_terminal)
-                VALUES ('test_wf_123', 'test_event_123', 'TRIAGED', NULL, 0, 0)
-                """
-            )
-            # Insert to recovery_audit_logs to verify SERIAL PRIMARY KEY structure
-            cursor.execute(
-                """
-                INSERT INTO recovery_audit_logs 
-                (workflow_id, from_state, to_state, trigger_type, actor, reasoning, created_at)
-                VALUES ('test_wf_123', 'TRIAGED', 'PROMISE_TO_PAY', 'USER_INPUT', 'AGENT_BRAIN', 'Test reasoning', ?)
-                """,
-                (datetime.now(timezone.utc).isoformat(),)
-            )
-            
-            # Check auto-increment key is retrieved correctly
-            log_id = cursor.lastrowid
-            self.assertIsNotNone(log_id)
-            print(f"Successfully inserted audit log. Postgres SERIAL ID retrieved: {log_id}")
+        print(f"    [DB_BACKEND = {DB_BACKEND}]")
 
-            
-            cursor.execute("SELECT * FROM recovery_audit_logs WHERE id = ?", (log_id,))
-            row = cursor.fetchone()
+        # ── 1. Verify schema.sql literally contains SERIAL PRIMARY KEY ─────────
+        # This is the canonical truth regardless of which backend is active.
+        with open(SCHEMA_PATH, "r") as f:
+            raw_schema = f.read()
+        self.assertIn(
+            "SERIAL PRIMARY KEY", raw_schema.upper(),
+            "schema.sql must define recovery_audit_logs.id as SERIAL PRIMARY KEY "
+            "(the canonical PostgreSQL definition)."
+        )
+        print("    schema.sql contains 'SERIAL PRIMARY KEY' — canonical Postgres definition confirmed.")
+
+        # ── 2. Confirm the active DB backend ──────────────────────────────────
+        if DB_BACKEND == "postgresql":
+            print("    Running against REAL PostgreSQL (DATABASE_URL is set).")
+        else:
+            print("    Running against SQLite (DATABASE_URL not set). "
+                  "SERIAL was rewritten to INTEGER at load time — "
+                  "set DATABASE_URL to test against real Postgres.")
+
+        # ── 3. Exercise the audit log table on whichever backend is active ─────
+        # Use the correct placeholder: ? for SQLite, %s for psycopg2
+        ph = "%s" if DB_BACKEND == "postgresql" else "?"
+
+        conn = get_connection()
+        try:
+            cur = conn.cursor() if DB_BACKEND == "sqlite" else conn.cursor(
+                **({"cursor_factory": __import__("psycopg2.extras", fromlist=["RealDictCursor"]).RealDictCursor}
+                   if DB_BACKEND == "postgresql" else {})
+            )
+
+            # Insert event
+            if DB_BACKEND == "postgresql":
+                cur.execute(
+                    f"""
+                    INSERT INTO at_risk_events
+                    (id, merchant_id, customer_id, customer_name, customer_phone, customer_email, amount_in_cents, event_type)
+                    VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    ('test_event_123','merch_1','cust_1','Test Customer','9999999999','test@test.com',5000,'PAYMENT_FAILED')
+                )
+                cur.execute(
+                    f"""
+                    INSERT INTO recovery_workflows
+                    (id, event_id, current_state, promise_to_pay_date, promise_breached, is_terminal)
+                    VALUES ({ph},{ph},{ph},NULL,false,false)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    ('test_wf_123','test_event_123','TRIAGED')
+                )
+            else:
+                cur.execute(
+                    f"""
+                    INSERT OR IGNORE INTO at_risk_events
+                    (id, merchant_id, customer_id, customer_name, customer_phone, customer_email, amount_in_cents, event_type)
+                    VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})
+                    """,
+                    ('test_event_123','merch_1','cust_1','Test Customer','9999999999','test@test.com',5000,'PAYMENT_FAILED')
+                )
+                cur.execute(
+                    f"""
+                    INSERT OR IGNORE INTO recovery_workflows
+                    (id, event_id, current_state, promise_to_pay_date, promise_breached, is_terminal)
+                    VALUES ({ph},{ph},{ph},NULL,0,0)
+                    """,
+                    ('test_wf_123','test_event_123','TRIAGED')
+                )
+
+            # Insert audit log — id column is SERIAL on Postgres, INTEGER on SQLite
+            if DB_BACKEND == "postgresql":
+                cur.execute(
+                    f"""
+                    INSERT INTO recovery_audit_logs
+                    (workflow_id, from_state, to_state, trigger_type, actor, reasoning, created_at)
+                    VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph})
+                    RETURNING id
+                    """,
+                    ('test_wf_123','TRIAGED','PROMISE_TO_PAY','USER_INPUT','AGENT_BRAIN','Test reasoning',
+                     datetime.now(timezone.utc).isoformat())
+                )
+                log_id = cur.fetchone()["id"]
+            else:
+                cur.execute(
+                    f"""
+                    INSERT INTO recovery_audit_logs
+                    (workflow_id, from_state, to_state, trigger_type, actor, reasoning, created_at)
+                    VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph})
+                    """,
+                    ('test_wf_123','TRIAGED','PROMISE_TO_PAY','USER_INPUT','AGENT_BRAIN','Test reasoning',
+                     datetime.now(timezone.utc).isoformat())
+                )
+                log_id = cur.lastrowid
+
+            self.assertIsNotNone(log_id)
+            print(f"    Inserted audit log — auto-generated id={log_id} "
+                  f"({'SERIAL on Postgres' if DB_BACKEND == 'postgresql' else 'INTEGER (rewritten from SERIAL) on SQLite'}).")
+
+            # Read back and verify
+            cur.execute(f"SELECT * FROM recovery_audit_logs WHERE id = {ph}", (log_id,))
+            row = dict_from_row(cur.fetchone())
             self.assertEqual(row["workflow_id"], 'test_wf_123')
-            print("Successfully retrieved schema logs. Serialization schema works perfectly.")
-            
-        finally:
+            print("    Row read back successfully. Serialisation schema works correctly.")
+
             conn.commit()
+        finally:
             conn.close()
 
     def test_scheduler_breach_detection(self):
