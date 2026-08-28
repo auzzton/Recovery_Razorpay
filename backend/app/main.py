@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, HTTPException, Depends
+from fastapi import FastAPI, Query, HTTPException, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict, Any
 import json
@@ -44,7 +44,7 @@ def check_and_trigger_breaches():
     """
     Background job: poll for PROMISE_TO_PAY workflows whose deadline
     (promise_to_pay_date + 2 hours) has passed WITHOUT a captured payment.
-    Automatically transitions them to PROMISE_BREACHED.
+    Automatically transitions them to PROMISE_BREACHED, then triggers AI re-triage.
     Runs every 5 minutes via APScheduler.
     """
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -69,25 +69,136 @@ def check_and_trigger_breaches():
                 "[BreachChecker] Found %d overdue promise(s) at %s",
                 len(overdue), now_utc
             )
-        for row in overdue:
-            wf_id = row["id"]
-            try:
-                transition_state(
-                    workflow_id=wf_id,
-                    to_state="PROMISE_BREACHED",
-                    trigger_type="PROMISE_BREACH",
-                    actor="SCHEDULER",
-                    reasoning=(
-                        f"Auto-breach: promise_to_pay_date + 2h elapsed "
-                        f"with no payment captured (checked at {now_utc})."
-                    ),
-                    extra_updates={"promise_breached": True}
-                )
-                logger.info("[BreachChecker] Breached workflow %s", wf_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("[BreachChecker] Failed to breach %s: %s", wf_id, exc)
     finally:
         conn.close()
+
+    for row in overdue:
+        wf_id = row["id"]
+        try:
+            # Fetch event_id for re-triage
+            conn_evt = get_connection()
+            cursor_evt = conn_evt.cursor()
+            cursor_evt.execute("SELECT event_id FROM recovery_workflows WHERE id = ?", (wf_id,))
+            evt_row = dict_from_row(cursor_evt.fetchone())
+            conn_evt.close()
+            event_id = evt_row["event_id"]
+
+            # 1. Transition to PROMISE_BREACHED
+            transition_state(
+                workflow_id=wf_id,
+                to_state="PROMISE_BREACHED",
+                trigger_type="PROMISE_BREACH",
+                actor="SCHEDULER",
+                reasoning=(
+                    f"Auto-breach: promise_to_pay_date + 2h elapsed "
+                    f"with no payment captured (checked at {now_utc})."
+                ),
+                extra_updates={"promise_breached": True}
+            )
+            logger.info("[BreachChecker] Breached workflow %s", wf_id)
+
+            # 2. Trigger automatic AI re-triage loop
+            _execute_post_breach_retriage(wf_id, event_id)
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[BreachChecker] Failed to breach %s: %s", wf_id, exc)
+
+
+def _execute_post_breach_retriage(workflow_id: str, event_id: str):
+    """
+    Automated re-triage loop triggered when a promise is breached.
+    Queries the Gemini decision engine to recommend the next best action,
+    dispatches any newly recommended outreach, and transitions state.
+    """
+    logger.info("[AutoReTriage] Running re-triage for workflow %s", workflow_id)
+
+    # 1. Fetch full event details
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, customer_name, customer_tier, amount_in_cents, failure_code,
+               razorpay_payment_id, customer_email, customer_phone
+        FROM at_risk_events WHERE id = ?
+        """,
+        (event_id,)
+    )
+    event_full = dict_from_row(cursor.fetchone())
+
+    # 2. Fetch current workflow stats
+    cursor.execute(
+        "SELECT retry_count, contact_count FROM recovery_workflows WHERE id = ?",
+        (workflow_id,)
+    )
+    wf_stats = dict_from_row(cursor.fetchone())
+    conn.close()
+
+    if not event_full or not wf_stats:
+        logger.warning("[AutoReTriage] Failed to load event/workflow for retriage: %s", workflow_id)
+        return
+
+    # 3. Call AI Decision Engine
+    triage = decision_engine.triage_event(event_full, wf_stats)
+
+    # Map recommended action to target FSM state
+    _ACTION_STATE_MAP = {
+        "SILENT_RETRY":       "RETRY_SCHEDULED",
+        "WHATSAPP_REMINDER":  "AWAITING_REPLY",
+        "VOICE_INTERVENTION": "AWAITING_REPLY",
+        "HUMAN_ESCALATION":   "ESCALATED",
+        "DO_NOT_CONTACT":     "DNC_LOCKED",
+    }
+    target_state = _ACTION_STATE_MAP.get(triage.recommended_action, "PROMISE_BREACHED")
+    is_terminal  = target_state in {"DNC_LOCKED", "PERMANENTLY_FAILED"}
+
+    # 4. Dispatch new outreach if recommended
+    outreach_result = None
+    OUTREACH_ACTIONS = {"WHATSAPP_REMINDER", "VOICE_INTERVENTION", "HUMAN_ESCALATION"}
+
+    if triage.recommended_action in OUTREACH_ACTIONS:
+        payment_url  = f"https://rzp.io/l/rec_{event_id[:8]}"
+        message_body = decision_engine.generate_outreach_message(event_full)
+
+        outreach_result = outreach_dispatcher.send_payment_reminder(
+            customer_name   = event_full["customer_name"],
+            customer_email  = event_full["customer_email"],
+            customer_phone  = event_full["customer_phone"],
+            amount_in_cents = event_full["amount_in_cents"],
+            failure_code    = event_full["failure_code"],
+            payment_url     = payment_url,
+            message_body    = message_body,
+            event_id        = event_id,
+        )
+
+    # 5. FSM Transition
+    re_triage_reasoning = (
+        f"Automated re-triage post promise-breach. "
+        f"AI decision: {triage.confidence_reasoning}. "
+        f"Transitioned to {target_state}."
+    )
+    if outreach_result:
+        re_triage_reasoning += f" Sent live reminder via {outreach_result.get('channel')}."
+
+    transition_state(
+        workflow_id = workflow_id,
+        to_state    = target_state,
+        trigger_type= "AUTO_RE_TRIAGE",
+        actor       = "AGENT_BRAIN",
+        reasoning   = re_triage_reasoning,
+        payload     = {
+            "recommended_action":  triage.recommended_action,
+            "failure_diagnosis":   triage.failure_diagnosis,
+            "outreach":            outreach_result,
+        },
+        extra_updates={
+            "p_recovery":          triage.p_recovery,
+            "expected_value_cents":triage.expected_value_cents,
+            "recommended_action":  triage.recommended_action,
+            "contact_count":       wf_stats["contact_count"] + (1 if outreach_result else 0),
+            "is_terminal":         is_terminal,
+        }
+    )
+
 
 
 def process_scheduled_retries():
@@ -558,7 +669,20 @@ def simulate_customer_reply(req: OutreachReplyRequest):
 @app.post("/api/simulator/trigger-breach")
 def trigger_promise_breach(workflow_id: str):
     """Simulates automated background job detecting promise date passed without payment."""
-    updated_wf = transition_state(
+    # Fetch event_id for re-triage
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT event_id FROM recovery_workflows WHERE id = ?", (workflow_id,))
+    row = dict_from_row(cursor.fetchone())
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    event_id = row["event_id"]
+
+    # 1. Transition to PROMISE_BREACHED state
+    transition_state(
         workflow_id=workflow_id,
         to_state="PROMISE_BREACHED",
         trigger_type="PROMISE_BREACH",
@@ -566,7 +690,19 @@ def trigger_promise_breach(workflow_id: str):
         reasoning="Scheduled breach check detected promise_to_pay_date passed + 2h with no payment captured.",
         extra_updates={"promise_breached": True}
     )
-    return {"status": "BREACH_TRIGGERED", "workflow": updated_wf}
+
+    # 2. Trigger automatic post-breach re-triage loop
+    _execute_post_breach_retriage(workflow_id, event_id)
+
+    # Fetch final updated workflow to return
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM recovery_workflows WHERE id = ?", (workflow_id,))
+    final_wf = dict_from_row(cursor.fetchone())
+    conn.close()
+
+    return {"status": "BREACH_TRIGGERED", "workflow": final_wf}
+
 
 
 @app.post("/api/webhook/razorpay")
@@ -749,3 +885,89 @@ def ingest_payment_webhook(payload: PaymentWebhookPayload):
         "outreach":         outreach_result,
         "workflow":         updated_wf,
     }
+
+
+@app.post("/api/webhook/twilio")
+def receive_twilio_whatsapp(
+    From: str = Form(...),
+    Body: str = Form(...)
+):
+    """
+    Inbound webhook for Twilio Sandbox WhatsApp/SMS.
+    Enables users to reply directly from their physical phone.
+    """
+    # Clean phone number (e.g., 'whatsapp:+919876543210' -> '+919876543210')
+    clean_phone = From.replace("whatsapp:", "").strip()
+    logger.info("[TwilioWebhook] Received message from %s: '%s'", clean_phone, Body)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    # Find latest active workflow associated with this phone number
+    cursor.execute(
+        """
+        SELECT w.*, e.customer_name, e.failure_code, e.amount_in_cents, e.payment_captured, e.customer_phone
+        FROM recovery_workflows w
+        JOIN at_risk_events e ON w.event_id = e.id
+        WHERE e.customer_phone = ? AND w.is_terminal = 0
+        ORDER BY w.updated_at DESC LIMIT 1
+        """,
+        (clean_phone,)
+    )
+    row = dict_from_row(cursor.fetchone())
+    conn.close()
+
+    if not row:
+        logger.warning("[TwilioWebhook] No active workflow found for phone: %s", clean_phone)
+        raise HTTPException(status_code=404, detail="No active workflow found for this phone number")
+
+    workflow_id = row["id"]
+    event_dict = {
+        "id": row["event_id"],
+        "payment_captured": row.get("payment_captured", False)
+    }
+
+    # Step 1: Run System Guard
+    should_block, reason, guard_state = run_system_guard(row, event_dict, incoming_message=Body)
+    if should_block and guard_state:
+        updated_wf = transition_state(
+            workflow_id=workflow_id,
+            to_state=guard_state,
+            trigger_type="OPT_OUT" if reason == "OPT_OUT_KEYWORD_DETECTED" else "RULE_VIOLATION",
+            actor="SYSTEM_GUARD",
+            reasoning=f"System Guard halted workflow: {reason} (Incoming WhatsApp: '{Body}')",
+            payload={"incoming_message": Body, "guard_reason": reason}
+        )
+        return {"status": "GUARD_BLOCKED", "workflow": updated_wf}
+
+    # Step 2: Parse message
+    text = Body.lower().strip()
+    if "paid" in text or "done" in text:
+        updated_wf = transition_state(
+            workflow_id=workflow_id,
+            to_state="RECOVERED",
+            trigger_type="USER_INPUT",
+            actor="AGENT_BRAIN",
+            reasoning="Customer confirmed payment completion via WhatsApp.",
+            payload={"incoming_message": Body}
+        )
+        return {"status": "SUCCESS", "workflow": updated_wf}
+
+    # Parse promise date
+    promise_date = get_promise_date(Body)
+    promise_date_display = promise_date[:10]
+
+    updated_wf = transition_state(
+        workflow_id=workflow_id,
+        to_state="PROMISE_TO_PAY",
+        trigger_type="USER_INPUT",
+        actor="AGENT_BRAIN",
+        reasoning=(
+            f"Customer promised payment via WhatsApp: '{Body}'. "
+            f"Parsed date: {promise_date}. Breach check active."
+        ),
+        payload={"incoming_message": Body, "promise_to_pay_date": promise_date},
+        extra_updates={"promise_to_pay_date": promise_date, "promise_breached": False}
+    )
+
+    return {"status": "PROMISE_RECORDED", "workflow": updated_wf}
+

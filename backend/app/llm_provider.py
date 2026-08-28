@@ -52,7 +52,7 @@ class HeuristicDecisionEngine(BaseLLMProvider):
     """
 
     def triage_event(self, event: Dict[str, Any], workflow_context: Dict[str, Any]) -> TriageResult:
-        failure_code = event.get("failure_code", "UNKNOWN")
+        failure_code = event.get("failure_code") or "UNKNOWN"
         amount = event.get("amount_in_cents", 0)
         tier = event.get("customer_tier", "STANDARD")
         retry_count = workflow_context.get("retry_count", 0)
