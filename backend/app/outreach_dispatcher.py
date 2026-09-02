@@ -163,7 +163,7 @@ def _send_via_resend(
             "Content-Type": "application/json",
         },
         json={
-            "from": "RecoveryOS <onboarding@resend.dev>",
+            "from": _RESEND_FROM,
             "to": [to_email],
             "subject": subject,
             "html": html_body,
