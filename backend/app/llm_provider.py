@@ -14,14 +14,15 @@ try:
 except ImportError:
     _GENAI_AVAILABLE = False
 
+# Intervention costs in paise (1 INR = 100 paise).
+# Configurable via env vars so operators can reflect real Twilio/Resend pricing without touching code.
 INTERVENTION_COSTS = {
-    "SILENT_RETRY": 0,          # ₹0
-    "WHATSAPP_REMINDER": 500,   # ₹5 (500 cents)
-    "VOICE_INTERVENTION": 2500, # ₹25 (2500 cents)
-    "HUMAN_ESCALATION": 25000,  # ₹250 (25000 cents)
-    "DO_NOT_CONTACT": 0
+    "SILENT_RETRY":       0,
+    "WHATSAPP_REMINDER":  int(os.environ.get("WHATSAPP_COST_PAISE", "500")),    # default ₹5
+    "VOICE_INTERVENTION": int(os.environ.get("VOICE_COST_PAISE",    "2500")),   # default ₹25
+    "HUMAN_ESCALATION":   int(os.environ.get("HUMAN_COST_PAISE",    "25000")),  # default ₹250
+    "DO_NOT_CONTACT":     0,
 }
-
 FAILURE_CODE_BASE_PROBABILITY = {
     "INSUFFICIENT_FUNDS": 0.72,
     "CARD_EXPIRED": 0.55,
