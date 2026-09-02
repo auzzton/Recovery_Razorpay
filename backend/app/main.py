@@ -44,6 +44,10 @@ PAYMENT_BASE_URL = os.environ.get("PAYMENT_BASE_URL", "https://checkout.example.
 # How often the background breach-checker and retry executor poll the DB.
 SCHEDULER_INTERVAL_MINUTES = int(os.environ.get("SCHEDULER_INTERVAL_MINUTES", "5"))
 
+# RBI NACH return rate benchmark: 12% of failed payments recover without any intervention.
+# Used as the counterfactual baseline in the dashboard ROI panel.
+NATURAL_RECOVERY_RATE = float(os.environ.get("NATURAL_RECOVERY_RATE", "0.12"))
+
 # ---------------------------------------------------------------------------
 # Background scheduler — auto-fires promise breach checks
 # ---------------------------------------------------------------------------
@@ -439,8 +443,9 @@ def get_dashboard_summary(merchant_id: Optional[str] = None):
     total_events = len(rows)
     total_at_risk_cents = sum(r["amount_in_cents"] for r in rows)
     
-    # Counterfactual Benchmark: Natural Recovery Rate = 12% (RBI NACH return rate benchmark)
-    natural_recovery_p = 0.12
+    # Counterfactual Benchmark: Natural Recovery Rate (RBI NACH return rate benchmark)
+    # Configurable via NATURAL_RECOVERY_RATE env var — default 12%
+    natural_recovery_p = NATURAL_RECOVERY_RATE
     natural_recovery_cents = int(total_at_risk_cents * natural_recovery_p)
     
     # RecoveryOS Recovered (RECOVERED state)
