@@ -20,7 +20,7 @@ Supports two backends transparently:
 
 Usage
 ─────
-  from backend.db.database import get_connection, dict_from_row, init_db, DB_BACKEND
+  from backend.db.database import get_connection, dict_from_row, init_db, DB_BACKEND, PLACEHOLDER
 
   DB_BACKEND  →  "postgresql" | "sqlite"
 """
@@ -39,8 +39,9 @@ DATABASE_URL = os.environ.get("DATABASE_URL")  # e.g. postgresql://user:pw@host/
 DB_PATH      = os.path.join(os.path.dirname(__file__), "recovery_os.db")
 SCHEMA_PATH  = os.path.join(os.path.dirname(__file__), "schema.sql")
 
-DB_BACKEND = "postgresql" if DATABASE_URL else "sqlite"
-logger.info("[DB] Backend: %s", DB_BACKEND)
+DB_BACKEND  = "postgresql" if DATABASE_URL else "sqlite"
+PLACEHOLDER = "%s"         if DB_BACKEND == "postgresql" else "?"
+logger.info("[DB] Backend: %s  |  SQL placeholder: %s", DB_BACKEND, PLACEHOLDER)
 
 
 # ── Connection factory ─────────────────────────────────────────────────────────
