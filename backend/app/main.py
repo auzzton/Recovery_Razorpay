@@ -373,15 +373,15 @@ def startup_event():
     # Start background breach-checker — polls every 5 minutes
     scheduler.add_job(
         check_and_trigger_breaches,
-        trigger=IntervalTrigger(minutes=5),
+        trigger=IntervalTrigger(minutes=SCHEDULER_INTERVAL_MINUTES),
         id="promise_breach_checker",
         name="Promise Breach Auto-Checker",
         replace_existing=True,
     )
-    # Start Razorpay silent-retry executor — polls every 5 minutes
+    # Start Razorpay silent-retry executor
     scheduler.add_job(
         process_scheduled_retries,
-        trigger=IntervalTrigger(minutes=5),
+        trigger=IntervalTrigger(minutes=SCHEDULER_INTERVAL_MINUTES),
         id="razorpay_retry_executor",
         name="Razorpay Silent Retry Executor",
         replace_existing=True,
