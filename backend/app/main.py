@@ -170,7 +170,7 @@ def _execute_post_breach_retriage(workflow_id: str, event_id: str):
     OUTREACH_ACTIONS = {"WHATSAPP_REMINDER", "VOICE_INTERVENTION", "HUMAN_ESCALATION"}
 
     if triage.recommended_action in OUTREACH_ACTIONS:
-        payment_url  = f"https://rzp.io/l/rec_{event_id[:8]}"
+        payment_url  = f"{PAYMENT_BASE_URL}?ref={event_id[:8]}"
         message_body = decision_engine.generate_outreach_message(event_full)
 
         outreach_result = outreach_dispatcher.send_payment_reminder(
@@ -833,7 +833,7 @@ def ingest_payment_webhook(payload: PaymentWebhookPayload):
     OUTREACH_ACTIONS = {"WHATSAPP_REMINDER", "VOICE_INTERVENTION", "HUMAN_ESCALATION"}
 
     if triage.recommended_action in OUTREACH_ACTIONS:
-        payment_url  = f"https://rzp.io/l/rec_{event_id[:8]}"
+        payment_url  = f"{PAYMENT_BASE_URL}?ref={event_id[:8]}"
         message_body = decision_engine.generate_outreach_message(event_full)
 
         outreach_result = outreach_dispatcher.send_payment_reminder(
