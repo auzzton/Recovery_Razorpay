@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict, Any
 import json
 import logging
+import os
 from datetime import datetime, timezone, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -35,7 +36,16 @@ app.add_middleware(
 decision_engine = GeminiDecisionEngine()
 
 # ---------------------------------------------------------------------------
-# Background scheduler — auto-fires promise breach checks every 5 minutes
+# Runtime configuration — all overridable via environment variables
+# ---------------------------------------------------------------------------
+# Payment recovery link base URL. Replace with your Razorpay payment link or hosted checkout.
+PAYMENT_BASE_URL = os.environ.get("PAYMENT_BASE_URL", "https://checkout.example.com/pay")
+
+# How often the background breach-checker and retry executor poll the DB.
+SCHEDULER_INTERVAL_MINUTES = int(os.environ.get("SCHEDULER_INTERVAL_MINUTES", "5"))
+
+# ---------------------------------------------------------------------------
+# Background scheduler — auto-fires promise breach checks
 # ---------------------------------------------------------------------------
 scheduler = BackgroundScheduler(timezone="UTC")
 
