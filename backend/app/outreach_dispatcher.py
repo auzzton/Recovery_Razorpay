@@ -46,8 +46,20 @@ _SMTP_PASSWORD      = os.environ.get("SMTP_PASSWORD")
 _SMTP_FROM          = os.environ.get("SMTP_FROM", _SMTP_USER)
 _TWILIO_SID         = os.environ.get("TWILIO_ACCOUNT_SID")
 _TWILIO_TOKEN       = os.environ.get("TWILIO_AUTH_TOKEN")
-_TWILIO_WA_FROM     = os.environ.get("TWILIO_FROM_WHATSAPP", "+14155238886")
+_TWILIO_WA_FROM     = os.environ.get("TWILIO_FROM_WHATSAPP")  # Must be set explicitly — no sandbox default
+if not _TWILIO_WA_FROM:
+    logger.warning(
+        "[Outreach] TWILIO_FROM_WHATSAPP env var is not set. "
+        "WhatsApp dispatch will fall back to simulation mode."
+    )
 _TWILIO_SMS_FROM    = os.environ.get("TWILIO_FROM_SMS")
+# Resend sender — default is Resend's test domain (dev only). Set RESEND_FROM_EMAIL for production.
+_RESEND_FROM        = os.environ.get("RESEND_FROM_EMAIL", "RecoveryOS <onboarding@resend.dev>")
+if _RESEND_FROM == "RecoveryOS <onboarding@resend.dev>":
+    logger.warning(
+        "[Outreach] RESEND_FROM_EMAIL is not set. Using Resend test domain (onboarding@resend.dev). "
+        "This will be rejected or land in spam on a real Resend account with a verified domain."
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
