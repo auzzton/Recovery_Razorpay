@@ -3,7 +3,7 @@ import uuid
 import string
 import json
 from datetime import datetime, timedelta, timezone
-from backend.db.database import get_connection, dict_from_row
+from backend.db.database import get_connection, dict_from_row, PLACEHOLDER
 from backend.app.guards import run_system_guard
 from backend.app.llm_provider import HeuristicDecisionEngine
 from backend.app.fsm import log_audit
@@ -13,6 +13,8 @@ _RZP_CHARS = string.ascii_letters + string.digits
 def _razorpay_payment_id() -> str:
     """Generate a realistic Razorpay payment ID like pay_Nn4T3d8uW9kP2r."""
     return "pay_" + "".join(random.choices(_RZP_CHARS, k=16))
+
+
 
 FAILURE_CODES = [
     ("INSUFFICIENT_FUNDS", 0.72),
@@ -70,12 +72,12 @@ def seed_synthetic_dataset(num_records: int = 100):
 
         # Insert Event — includes authentic Razorpay payment ID for retry API calls
         cursor.execute(
-            """
+            f"""
             INSERT INTO at_risk_events 
             (id, merchant_id, customer_id, customer_name, customer_phone, customer_email, 
              customer_tier, amount_in_cents, event_type, failure_code, raw_payload,
              razorpay_payment_id, payment_captured, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ({PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER})
             """,
             (
                 event_id, merchant_id, customer_id, customer_name, customer_phone, customer_email,
@@ -169,11 +171,11 @@ def seed_synthetic_dataset(num_records: int = 100):
                 promise_breached = True
 
         cursor.execute(
-            """
+            f"""
             INSERT INTO recovery_workflows 
             (id, event_id, current_state, p_recovery, expected_value_cents, recommended_action, 
              retry_count, contact_count, promise_to_pay_date, promise_breached, is_terminal, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ({PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER}, {PLACEHOLDER})
             """,
             (
                 workflow_id, event_id, target_state, p_rec, ev_cents, rec_action,
