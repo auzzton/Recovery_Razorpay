@@ -14,6 +14,32 @@ def _razorpay_payment_id() -> str:
     """Generate a realistic Razorpay payment ID like pay_Nn4T3d8uW9kP2r."""
     return "pay_" + "".join(random.choices(_RZP_CHARS, k=16))
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Realistic Indian customer identity pools
+# ──────────────────────────────────────────────────────────────────────────────
+_INDIAN_NAMES = [
+    ("Arjun",     "Sharma"),   ("Priya",      "Nair"),     ("Rahul",    "Mehta"),
+    ("Ananya",    "Iyer"),     ("Vikram",     "Singh"),    ("Deepa",    "Pillai"),
+    ("Karthik",   "Rao"),      ("Shreya",     "Patel"),    ("Amit",     "Verma"),
+    ("Divya",     "Krishnan"), ("Rohan",      "Gupta"),    ("Meera",    "Joshi"),
+    ("Aditya",    "Reddy"),    ("Sunita",     "Desai"),    ("Nikhil",   "Bose"),
+    ("Kavya",     "Menon"),    ("Siddharth",  "Tiwari"),   ("Pooja",    "Agarwal"),
+    ("Manish",    "Chandra"),  ("Riya",       "Shah"),
+]
+# Indian mobile carrier prefixes: Jio (+9188), Airtel (+9198), Vi (+9195), BSNL (+9194)
+_MOBILE_PREFIXES  = ["+9188", "+9198", "+9195", "+9194", "+9189"]
+_EMAIL_DOMAINS    = ["gmail.com", "yahoo.in", "outlook.com", "hotmail.com", "rediffmail.com"]
+
+def _fake_customer(index: int):
+    """Return a realistic-looking Indian customer tuple (name, phone, email, customer_id)."""
+    first, last   = random.choice(_INDIAN_NAMES)
+    suffix        = random.randint(1, 99)
+    name          = f"{first} {last}"
+    phone         = f"{random.choice(_MOBILE_PREFIXES)}{random.randint(100000, 999999)}"
+    email         = f"{first.lower()}.{last.lower()}{suffix}@{random.choice(_EMAIL_DOMAINS)}"
+    customer_id   = f"CUST_{index+1:04d}"
+    return name, phone, email, customer_id
+
 
 
 FAILURE_CODES = [
@@ -63,11 +89,8 @@ def seed_synthetic_dataset(num_records: int = 100):
         event_id = str(uuid.uuid4())
         razorpay_payment_id = _razorpay_payment_id()   # Authentic pay_xxx ID for API calls
         merchant_id = f"MER_{random.randint(1, 5):03d}"
-        customer_id = f"CUST_{i+1:04d}"
-        customer_name = f"Customer {i+1}"
+        customer_name, customer_phone, customer_email, customer_id = _fake_customer(i)
         customer_tier = random.choice(TIERS)
-        customer_phone = f"+9198765{i+1:05d}"
-        customer_email = f"customer{i+1}@example.com"
         created_at = (now - timedelta(hours=random.randint(1, 72))).isoformat()
 
         # Insert Event — includes authentic Razorpay payment ID for retry API calls
