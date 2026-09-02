@@ -23,6 +23,11 @@ INTERVENTION_COSTS = {
     "HUMAN_ESCALATION":   int(os.environ.get("HUMAN_COST_PAISE",    "25000")),  # default ₹250
     "DO_NOT_CONTACT":     0,
 }
+
+# Hand-tuned recovery probability priors.
+# IMPORTANT: These are NOT derived from real Razorpay transaction data.
+# They are heuristic estimates for demo/development, informed by domain knowledge
+# and RBI NACH return patterns. Replace with merchant-specific historical rates in production.
 FAILURE_CODE_BASE_PROBABILITY = {
     "INSUFFICIENT_FUNDS": 0.72,
     "CARD_EXPIRED": 0.55,
