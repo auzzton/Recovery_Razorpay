@@ -7,6 +7,9 @@ from backend.app.models import TriageResult
 
 logger = logging.getLogger(__name__)
 
+# Payment recovery link base URL. Set PAYMENT_BASE_URL in env for production.
+PAYMENT_BASE_URL = os.environ.get("PAYMENT_BASE_URL", "https://checkout.example.com/pay")
+
 # Lazily import google.generativeai to avoid app launch failure if SDK is not installed yet
 try:
     import google.generativeai as genai
@@ -131,7 +134,7 @@ class HeuristicDecisionEngine(BaseLLMProvider):
         
         return (
             f"Hi {name}, your payment of {amount_rupees} could not be processed due to {failure.lower().replace('_', ' ')}. "
-            f"Please complete your payment here: https://rzp.io/l/rec_{event.get('id', '')[:8]}\n"
+            f"Please complete your payment here: {PAYMENT_BASE_URL}?ref={event.get('id', '')[:8]}\n"
             f"Reply STOP to opt out."
         )
 
@@ -228,7 +231,7 @@ Draft a personalized, high-converting WhatsApp payment recovery outreach message
 - Customer Name: {event.get('customer_name')}
 - Amount: ₹{event.get('amount_in_cents', 0) / 100:.2f}
 - Failure Cause: {event.get('failure_code', 'payment failure').replace('_', ' ').lower()}
-- Payment URL: https://rzp.io/l/rec_{event.get('id', '')[:8]}
+- Payment URL: {PAYMENT_BASE_URL}?ref={event.get('id', '')[:8]}
 
 Guidelines:
 - Keep it highly professional, polite, and direct.
