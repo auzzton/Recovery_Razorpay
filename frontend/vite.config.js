@@ -8,9 +8,12 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        // Set BACKEND_URL env var to point at a remote backend (staging, Railway, Render, etc.)
+        // Falls back to local FastAPI dev server when unset.
+        target: process.env.BACKEND_URL || 'http://127.0.0.1:8000',
         changeOrigin: true,
       }
     }
   }
 })
+
