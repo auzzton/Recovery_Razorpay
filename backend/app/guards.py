@@ -1,12 +1,15 @@
+import os
 from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
 from typing import Tuple, Optional, Dict, Any
 
 QUIET_START = 21 # 9 PM IST
 QUIET_END = 9    # 9 AM IST
-MAX_RETRIES = 3
-MAX_CONTACTS_PER_48H = 2
+# TRAI compliance limits — configurable per deployment without code changes.
+MAX_RETRIES          = int(os.environ.get("MAX_RETRIES",          "3"))
+MAX_CONTACTS_PER_48H = int(os.environ.get("MAX_CONTACTS_PER_48H", "2"))
 OPT_OUT_KEYWORDS = ["stop", "opt out", "unsubscribe", "band karo", "mat bhejo"]
+
 
 def is_quiet_hours() -> bool:
     """Returns True if current time in IST is between 9 PM and 9 AM."""
