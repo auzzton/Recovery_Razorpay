@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, Query, HTTPException, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict, Any
@@ -39,7 +42,7 @@ decision_engine = GeminiDecisionEngine()
 # Runtime configuration — all overridable via environment variables
 # ---------------------------------------------------------------------------
 # Payment recovery link base URL. Replace with your Razorpay payment link or hosted checkout.
-PAYMENT_BASE_URL = os.environ.get("PAYMENT_BASE_URL", "https://checkout.example.com/pay")
+PAYMENT_BASE_URL = os.environ.get("PAYMENT_BASE_URL", "https://razorpay.com/payment-link/plink_TY2Bk6FYxeAEBs/test")
 
 # How often the background breach-checker and retry executor poll the DB.
 SCHEDULER_INTERVAL_MINUTES = int(os.environ.get("SCHEDULER_INTERVAL_MINUTES", "5"))
