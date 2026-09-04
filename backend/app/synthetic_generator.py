@@ -1,3 +1,11 @@
+import os
+import sys
+
+# Ensure project root is in sys.path when script is executed directly
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import random
 import uuid
 import string
@@ -31,12 +39,11 @@ _MOBILE_PREFIXES  = ["+9188", "+9198", "+9195", "+9194", "+9189"]
 _EMAIL_DOMAINS    = ["gmail.com", "yahoo.in", "outlook.com", "hotmail.com", "rediffmail.com"]
 
 def _fake_customer(index: int):
-    """Return a realistic-looking Indian customer tuple (name, phone, email, customer_id)."""
+    """Return customer tuple using configured user target email and phone number."""
     first, last   = random.choice(_INDIAN_NAMES)
-    suffix        = random.randint(1, 99)
     name          = f"{first} {last}"
-    phone         = f"{random.choice(_MOBILE_PREFIXES)}{random.randint(100000, 999999)}"
-    email         = f"{first.lower()}.{last.lower()}{suffix}@{random.choice(_EMAIL_DOMAINS)}"
+    phone         = "+919361001990"
+    email         = "auzton7@gmail.com"
     customer_id   = f"CUST_{index+1:04d}"
     return name, phone, email, customer_id
 
@@ -216,3 +223,9 @@ def seed_synthetic_dataset(num_records: int = 100):
     conn.commit()
     conn.close()
     return len(records)
+
+
+if __name__ == "__main__":
+    count = seed_synthetic_dataset(50)
+    print(f"Successfully generated and seeded {count} synthetic payment recovery workflows into the database!")
+
