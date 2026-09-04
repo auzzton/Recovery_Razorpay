@@ -86,10 +86,10 @@ export default function ReplySimulator({ workflows, onRefresh }) {
               fontSize: '0.85rem'
             }}
           >
-            <option value="">-- Choose a workflow --</option>
-            {activeWorkflows.slice(0, 15).map(w => (
-              <option key={w.workflow_id} value={w.workflow_id}>
-                {w.customer_name} ({w.current_state}) - ₹{w.amount_in_cents / 100}
+            <option value="" style={{ background: '#0f172a', color: '#f8fafc' }}>-- Choose a workflow --</option>
+            {(activeWorkflows.length > 0 ? activeWorkflows : workflows).slice(0, 20).map(w => (
+              <option key={w.workflow_id} value={w.workflow_id} style={{ background: '#0f172a', color: '#f8fafc' }}>
+                {w.customer_name} ({w.current_state}) - ₹{(w.amount_in_cents / 100).toLocaleString('en-IN')}
               </option>
             ))}
           </select>
