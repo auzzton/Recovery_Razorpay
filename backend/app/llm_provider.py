@@ -1,4 +1,13 @@
 import os
+import sys
+from dotenv import load_dotenv
+load_dotenv()
+
+# Ensure project root is in sys.path when module is loaded directly
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -7,8 +16,9 @@ from backend.app.models import TriageResult
 
 logger = logging.getLogger(__name__)
 
-# Payment recovery link base URL. Set PAYMENT_BASE_URL in env for production.
-PAYMENT_BASE_URL = os.environ.get("PAYMENT_BASE_URL", "https://checkout.example.com/pay")
+# Payment recovery link base URL. Reads PAYMENT_BASE_URL from env dynamically.
+def get_payment_base_url() -> str:
+    return os.environ.get("PAYMENT_BASE_URL", "https://razorpay.com/payment-link/plink_TY2Bk6FYxeAEBs/test")
 
 # Lazily import google.generativeai to avoid app launch failure if SDK is not installed yet
 try:
@@ -134,7 +144,7 @@ class HeuristicDecisionEngine(BaseLLMProvider):
         
         return (
             f"Hi {name}, your payment of {amount_rupees} could not be processed due to {failure.lower().replace('_', ' ')}. "
-            f"Please complete your payment here: {PAYMENT_BASE_URL}?ref={event.get('id', '')[:8]}\n"
+            f"Please complete your payment here: {get_payment_base_url()}?ref={event.get('id', '')[:8]}\n"
             f"Reply STOP to opt out."
         )
 
@@ -148,7 +158,7 @@ class GeminiDecisionEngine(BaseLLMProvider):
 
     def __init__(self):
         self.heuristic_fallback = HeuristicDecisionEngine()
-        self.model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        self.model_name = os.environ.get("GEMINI_MODEL", "gemma-4-26b-a4b-it")
         self.api_key = os.environ.get("GEMINI_API_KEY")
 
         if _GENAI_AVAILABLE and self.api_key:
@@ -195,28 +205,34 @@ Formulate the TriageResult with these rules:
 3. If Customer Tier is 'VIP', you must NEVER choose VOICE_INTERVENTION (VIPs prefer WhatsApp).
 4. Provide a detailed diagnosis of the failure code.
 5. Provide a realistic recovery probability (p_recovery) between 0.0 and 1.0.
+Return JSON only with these keys:
+{{
+  "failure_diagnosis": "string",
+  "p_recovery": 0.5,
+  "expected_value_cents": 1000,
+  "recommended_action": "WHATSAPP_REMINDER",
+  "scheduled_delay_minutes": 60,
+  "confidence_reasoning": "string"
+}}
 """
         try:
-            model = genai.GenerativeModel(
-                self.model_name,
-                system_instruction="You are an AI Revenue Recovery specialist that triages transaction failures."
-            )
-            config = genai.types.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=TriageResult,
-                temperature=0.1
-            )
-            response = model.generate_content(prompt, generation_config=config)
-            data = json.loads(response.text)
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(prompt)
+            text = response.text.strip()
+            # Clean possible markdown code fences
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            data = json.loads(text.strip())
             
-            # Map values back to schema object
             return TriageResult(
-                failure_diagnosis=data.get("failure_diagnosis"),
+                failure_diagnosis=str(data.get("failure_diagnosis", "Payment failure")),
                 p_recovery=round(float(data.get("p_recovery", 0.5)), 2),
                 expected_value_cents=int(data.get("expected_value_cents", 0)),
-                recommended_action=data.get("recommended_action", "SILENT_RETRY"),
+                recommended_action=str(data.get("recommended_action", "WHATSAPP_REMINDER")),
                 scheduled_delay_minutes=int(data.get("scheduled_delay_minutes", 60)),
-                confidence_reasoning=data.get("confidence_reasoning")
+                confidence_reasoning=str(data.get("confidence_reasoning", "AI decision"))
             )
         except Exception as exc:
             logger.warning("[Gemini] API error during triage: %s. Falling back to heuristics.", exc)
@@ -231,7 +247,7 @@ Draft a personalized, high-converting WhatsApp payment recovery outreach message
 - Customer Name: {event.get('customer_name')}
 - Amount: ₹{event.get('amount_in_cents', 0) / 100:.2f}
 - Failure Cause: {event.get('failure_code', 'payment failure').replace('_', ' ').lower()}
-- Payment URL: {PAYMENT_BASE_URL}?ref={event.get('id', '')[:8]}
+- Payment URL: {get_payment_base_url()}?ref={event.get('id', '')[:8]}
 
 Guidelines:
 - Keep it highly professional, polite, and direct.
