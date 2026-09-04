@@ -62,18 +62,17 @@ graph TD
 This diagram shows the interactions between the primary actors (Merchant, Customer, System Scheduler) and the RecoveryOS platform.
 
 ```mermaid
-leftToRightDirection
-graph TD
+graph LR
     subgraph Actors
-        Merchant[Merchant Developer]
-        Customer[Customer]
-        Scheduler[System Scheduler]
+        Merchant["Merchant Developer"]
+        Customer["Customer"]
+        Scheduler["System Scheduler"]
     end
 
     subgraph "RecoveryOS Platform"
         UC1["Ingest Payment Webhook"]
         UC2["Run AI Triage & EV Score"]
-        UC3["Enforce Trai quiet hours & limits"]
+        UC3["Enforce TRAI Quiet Hours & Limits"]
         UC4["Dispatch Outreach (Email/WhatsApp)"]
         UC5["Simulate Customer Reply"]
         UC6["Trigger Auto-Breach Check"]
