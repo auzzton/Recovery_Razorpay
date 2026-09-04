@@ -23,6 +23,15 @@ Keys are read from environment variables:
 """
 
 import os
+import sys
+from dotenv import load_dotenv
+load_dotenv()
+
+# Ensure project root is in sys.path when module is loaded directly
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import json
 import logging
 import smtplib
@@ -36,26 +45,25 @@ import requests
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Environment configuration (all optional — falls back to simulation)
+# Environment configuration helper getters (dynamically read from env)
 # ──────────────────────────────────────────────────────────────────────────────
-_RESEND_API_KEY     = os.environ.get("RESEND_API_KEY")
-_SMTP_HOST          = os.environ.get("SMTP_HOST")
-_SMTP_PORT          = int(os.environ.get("SMTP_PORT", "587"))
-_SMTP_USER          = os.environ.get("SMTP_USER")
-_SMTP_PASSWORD      = os.environ.get("SMTP_PASSWORD")
-_SMTP_FROM          = os.environ.get("SMTP_FROM", _SMTP_USER)
-_TWILIO_SID         = os.environ.get("TWILIO_ACCOUNT_SID")
-_TWILIO_TOKEN       = os.environ.get("TWILIO_AUTH_TOKEN")
-_TWILIO_WA_FROM     = os.environ.get("TWILIO_FROM_WHATSAPP")  # Must be set explicitly — no sandbox default
-if not _TWILIO_WA_FROM:
+def _get_resend_api_key(): return os.environ.get("RESEND_API_KEY")
+def _get_smtp_host(): return os.environ.get("SMTP_HOST")
+def _get_smtp_port(): return int(os.environ.get("SMTP_PORT", "587"))
+def _get_smtp_user(): return os.environ.get("SMTP_USER")
+def _get_smtp_pass(): return os.environ.get("SMTP_PASSWORD")
+def _get_smtp_from(): return os.environ.get("SMTP_FROM", _get_smtp_user())
+def _get_twilio_sid(): return os.environ.get("TWILIO_ACCOUNT_SID")
+def _get_twilio_token(): return os.environ.get("TWILIO_AUTH_TOKEN")
+def _get_twilio_wa_from(): return os.environ.get("TWILIO_FROM_WHATSAPP")
+def _get_twilio_sms_from(): return os.environ.get("TWILIO_FROM_SMS")
+def _get_resend_from(): return os.environ.get("RESEND_FROM_EMAIL", "RecoveryOS <onboarding@resend.dev>")
+if not _get_twilio_wa_from():
     logger.warning(
         "[Outreach] TWILIO_FROM_WHATSAPP env var is not set. "
         "WhatsApp dispatch will fall back to simulation mode."
     )
-_TWILIO_SMS_FROM    = os.environ.get("TWILIO_FROM_SMS")
-# Resend sender — default is Resend's test domain (dev only). Set RESEND_FROM_EMAIL for production.
-_RESEND_FROM        = os.environ.get("RESEND_FROM_EMAIL", "RecoveryOS <onboarding@resend.dev>")
-if _RESEND_FROM == "RecoveryOS <onboarding@resend.dev>":
+if _get_resend_from() == "RecoveryOS <onboarding@resend.dev>":
     logger.warning(
         "[Outreach] RESEND_FROM_EMAIL is not set. Using Resend test domain (onboarding@resend.dev). "
         "This will be rejected or land in spam on a real Resend account with a verified domain."
@@ -159,11 +167,11 @@ def _send_via_resend(
     resp = requests.post(
         "https://api.resend.com/emails",
         headers={
-            "Authorization": f"Bearer {_RESEND_API_KEY}",
+            "Authorization": f"Bearer {_get_resend_api_key()}",
             "Content-Type": "application/json",
         },
         json={
-            "from": _RESEND_FROM,
+            "from": _get_resend_from(),
             "to": [to_email],
             "subject": subject,
             "html": html_body,
@@ -188,18 +196,18 @@ def _send_via_smtp(
     """Send email via SMTP (Gmail App Password / any SMTP relay)."""
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = _SMTP_FROM or _SMTP_USER
+    msg["From"]    = _get_smtp_from()
     msg["To"]      = to_email
     msg.attach(MIMEText(plain_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))
 
     context = ssl.create_default_context()
-    with smtplib.SMTP(_SMTP_HOST, _SMTP_PORT) as server:
+    with smtplib.SMTP(_get_smtp_host(), _get_smtp_port()) as server:
         server.starttls(context=context)
-        server.login(_SMTP_USER, _SMTP_PASSWORD)
-        server.sendmail(_SMTP_FROM or _SMTP_USER, to_email, msg.as_string())
+        server.login(_get_smtp_user(), _get_smtp_pass())
+        server.sendmail(_get_smtp_from(), to_email, msg.as_string())
 
-    logger.info("[Outreach] SMTP email sent to %s via %s", to_email, _SMTP_HOST)
+    logger.info("[Outreach] SMTP email sent to %s via %s", to_email, _get_smtp_host())
     return {"channel": "EMAIL", "provider": "SMTP", "status": "sent", "provider_id": None}
 
 
@@ -209,12 +217,14 @@ def _send_via_smtp(
 
 def _send_via_twilio(to_phone: str, message: str, use_whatsapp: bool = True) -> dict:
     """Send a WhatsApp or SMS message via Twilio."""
-    from_number = f"whatsapp:{_TWILIO_WA_FROM}" if use_whatsapp else _TWILIO_SMS_FROM
-    to_number   = f"whatsapp:{to_phone}"         if use_whatsapp else to_phone
+    sid   = _get_twilio_sid()
+    token = _get_twilio_token()
+    from_number = f"whatsapp:{_get_twilio_wa_from()}" if use_whatsapp else _get_twilio_sms_from()
+    to_number   = f"whatsapp:{to_phone}"               if use_whatsapp else to_phone
 
     resp = requests.post(
-        f"https://api.twilio.com/2010-04-01/Accounts/{_TWILIO_SID}/Messages.json",
-        auth=(_TWILIO_SID, _TWILIO_TOKEN),
+        f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
+        auth=(sid, token),
         data={"From": from_number, "To": to_number, "Body": message},
         timeout=15,
     )
@@ -267,23 +277,23 @@ def send_payment_reminder(
     # ── CHANNEL 1: Email ──────────────────────────────────────────────────────
     if customer_email:
         try:
-            if _RESEND_API_KEY:
-                return _send_via_resend(customer_email, subject, html_body, message_body)
-            elif _SMTP_HOST and _SMTP_USER and _SMTP_PASSWORD:
+            if _get_smtp_host() and _get_smtp_user() and _get_smtp_pass():
                 return _send_via_smtp(customer_email, subject, html_body, message_body)
+            elif _get_resend_api_key():
+                return _send_via_resend(customer_email, subject, html_body, message_body)
         except Exception as exc:
             logger.warning(
-                "[Outreach] Email dispatch failed for %s: %s. Trying WhatsApp fallback.", event_id, exc
+                "[Outreach] Primary email dispatch failed for %s: %s. Trying WhatsApp fallback.", event_id, exc
             )
 
     # ── CHANNEL 2: WhatsApp (Twilio) ─────────────────────────────────────────
-    if customer_phone and _TWILIO_SID and _TWILIO_TOKEN:
+    if customer_phone and _get_twilio_sid() and _get_twilio_token():
         try:
             return _send_via_twilio(customer_phone, message_body, use_whatsapp=True)
         except Exception as exc:
             logger.warning("[Outreach] WhatsApp fallback failed: %s. Trying SMS.", exc)
             try:
-                if _TWILIO_SMS_FROM:
+                if _get_twilio_sms_from():
                     return _send_via_twilio(customer_phone, message_body, use_whatsapp=False)
             except Exception as exc2:
                 logger.error("[Outreach] SMS fallback also failed: %s", exc2)
